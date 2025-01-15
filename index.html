@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Landsat 8 多指数计算器</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      padding: 0;
+      display: flex;
+      flex-direction: row;
+      height: 100vh;
+    }
+    #map {
+      width: 70%;
+      height: 100%;
+    }
+    #ui-panel {
+      width: 30%;
+      padding: 20px;
+      background: #f7f7f7;
+      overflow-y: auto;
+    }
+    #ui-panel label {
+      display: block;
+      margin-top: 10px;
+    }
+    #runButton {
+      margin-top: 20px;
+      padding: 10px;
+      background-color: #4CAF50;
+      color: white;
+      border: none;
+      cursor: pointer;
+    }
+    #runButton:hover {
+      background-color: #45a049;
+    }
+  </style>
+</head>
+<body>
+
+  <!-- 用户界面面板 -->
+  <div id="ui-panel">
+    <h2>Landsat 8 多指数计算器</h2>
+    <label for="yearStart">选择开始年份 (如: 2015)</label>
+    <input type="text" id="yearStart" value="2015" />
+
+    <label for="yearEnd">选择结束年份 (如: 2022)</label>
+    <input type="text" id="yearEnd" value="2022" />
+
+    <label for="indexType">选择指数类型：</label>
+    <select id="indexType">
+      <option value="NDVI">NDVI</option>
+      <option value="EVI">EVI</option>
+      <option value="RVI">RVI</option>
+      <option value="DVI">DVI</option>
+      <option value="RECl">RECl</option>
+      <option value="MSAVI">MSAVI</option>
+      <option value="GNDVI">GNDVI</option>
+      <option value="OSAVI">OSAVI</option>
+      <option value="SIPI">SIPI</option>
+    </select>
+
+    <label for="drawROI">请在地图上绘制ROI区域</label>
+
+    <button id="runButton">计算</button>
+    <div id="resultPanel"></div>
+  </div>
+
+  <!-- 地图显示区域 -->
+  <div id="map"></div>
+
+  <!-- 引入Google Earth Engine的JavaScript API -->
+  <script src="https://cdn.jsdelivr.net/gh/google/earthengine-api@v0.1.4/js/earthengine.js"></script>
+  <script>
+    // 等待Google Earth Engine加载完成后执行代码
+    function initializeGEE() {
+      ee.Initialize();
+
+      // 创建地图并设置视角
+      var map = new google.maps.Map(document.getElementById('map'), {
+        center: {lat: 37.7749, lng: -122.4194}, // 默认位置（例如：美国旧金山）
+        zoom: 8
+      });
+
+      // 创建UI组件
+      const yearStart = document.getElementById('yearStart');
+      const yearEnd = document.getElementById('yearEnd');
+      const indexType = document.getElementById('indexType');
+      const resultPanel = document.getElementById('resultPanel');
+      const runButton = document.getElementById('runButton');
+      
+      let drawingTools = new google.maps.drawing.DrawingManager({
+        drawingMode: google.maps.drawing.OverlayType.POLYGON,
+        drawingControl: true,
+        drawingControlOptions: {
+          position: google.maps.ControlPosition.TOP_CENTER,
+          drawingModes: ['polygon']
+        }
+      });
+      drawingTools.setMap(map);
+      
+      let roi = null;
+
+      // 获取ROI区域
+      google.maps.event.addListener(drawingTools, 'overlaycomplete', function(event) {
+        roi = event.overlay.getPath().getArray();
+      });
+
+      // 核心分析函数
+      function runAnalysis() {
+        if (!roi) {
+          resultPanel.innerHTML = '请绘制一个ROI区域!';
+          return;
+        }
+
+        const startYear = parseInt(yearStart.value);
+        const endYear = parseInt(yearEnd.value);
+        const index = indexType.value;
+
+        if (isNaN(startYear) || isNaN(endYear) || startYear > endYear) {
+          resultPanel.innerHTML = '请检查年份输入是否正确！';
+          return;
+        }
+
+        // 转换为EE geometry
+        var roiGeom = ee.Geometry.Polygon(roi.map(function(pt) {
+          return [pt.lng(), pt.lat()];
+        }));
+
+        // 计算植被指数
+        function calculateIndex(image, indexType) {
+          var NIR = image.select('SR_B5');
+          var RED = image.select('SR_B4');
+          var GREEN = image.select('SR_B3');
+          var BLUE = image.select('SR_B2');
+          
+          switch (indexType) {
+            case 'NDVI':
+              return image.normalizedDifference(['SR_B5', 'SR_B4']).rename('NDVI');
+            case 'EVI':
+              return image.expression(
+                '2.5 * ((NIR - RED) / (NIR + 6 * RED - 7.5 * BLUE + 1))',
+                {NIR: NIR, RED: RED, BLUE: BLUE}
+              ).rename('EVI');
+            case 'RVI':
+              return NIR.divide(RED).rename('RVI');
+            case 'DVI':
+              return NIR.subtract(RED).rename('DVI');
+            case 'RECl':
+              return NIR.divide(RED).subtract(1).rename('RECl');
+            case 'MSAVI':
+              return image.expression(
+                '(2 * NIR + 1 - sqrt((2 * NIR + 1) ** 2 - 8 * (NIR - RED))) / 2',
+                {NIR: NIR, RED: RED}
+              ).rename('MSAVI');
+            case 'GNDVI':
+              return image.normalizedDifference(['SR_B5', 'SR_B3']).rename('GNDVI');
+            case 'OSAVI':
+              return image.expression(
+                '(NIR - RED) / (NIR + RED + 0.16)',
+                {NIR: NIR, RED: RED}
+              ).rename('OSAVI');
+            case 'SIPI':
+              return image.expression(
+                '(NIR - BLUE) / (NIR - RED)',
+                {NIR: NIR, BLUE: BLUE, RED: RED}
+              ).rename('SIPI');
+            default:
+              return image;
+          }
+        }
+
+        // 获取年份序列并计算年均值
+        var years = ee.List.sequence(startYear, endYear);
+        var annualCollection = years.map(function(year) {
+          var collection = ee.ImageCollection('LANDSAT/LC08/C02/T1_L2')
+            .filterBounds(roiGeom)
+            .filter(ee.Filter.calendarRange(year, year, 'year'))
+            .map(function(image) {
+              return calculateIndex(image, index).set('system:time_start', image.get('system:time_start'));
+            });
+          var annualMean = collection.mean().reduceRegion({
+            reducer: ee.Reducer.mean(),
+            geometry: roiGeom,
+            scale: 30,
+            maxPixels: 1e9
+          }).get(index);
+          return ee.Feature(null, {'year': year, 'mean': annualMean});
+        });
+
+        annualCollection = ee.FeatureCollection(annualCollection);
+
+        // 可视化结果
+        annualCollection.aggregate_array('year').evaluate(function(years) {
+          annualCollection.aggregate_array('mean').evaluate(function(means) {
+            if (!means || means.length === 0) {
+              resultPanel.innerHTML = '未找到影像数据，请检查年份或区域！';
+              return;
+            }
+            var chart = ui.Chart.array.values(means, 0, years)
+              .setOptions({
+                title: '年均值变化',
+                hAxis: {title: '年份'},
+                vAxis: {title: index + ' 值'},
+                lineWidth: 2,
+                pointSize: 4
+              });
+            resultPanel.appendChild(chart);
+          });
+        });
+      }
+
+      // 点击计算按钮执行分析
+      runButton.addEventListener('click', runAnalysis);
+    }
+
+    // 初始化Google Earth Engine
+    initializeGEE();
+  </script>
+</body>
+</html>
